@@ -1,0 +1,660 @@
+---
+title: "DiversityV1"
+output: html_document
+date: "2022-11-28"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+install.packages("vegan")
+install.packages("ape")
+install.packages("phangorn")
+install.packages("seqinr")
+install.packages("cowplot")
+```
+
+You should already have this one
+```{r}
+if (!require("BiocManager", quietly = TRUE))
+    install.packages("BiocManager")
+BiocManager::install(version = "3.16")
+```
+
+```{r}
+BiocManager::install("phyloseq")
+```
+
+```{r}
+BiocManager::install("microbiome")
+BiocManager::install("ALDEx2")
+BiocManager::install("microbiomeMarker")
+#yaaBiocManager::install("dada2")
+BiocManager::install("DEFormats")
+```
+
+```{r}
+library(tidyverse)
+library(phyloseq)
+library(microbiome)
+library(microbiomeMarker)
+library(ALDEx2)
+library(vegan)
+library(cowplot)
+```
+
+Load the files and data
+
+DO YOU HVAE OBJECTS ON THE LEFT? ONLY RUN IF THERE IS NOTHING IN THE ENVIRONMENT
+```{r}
+load("alios2.RData")
+```
+```{r}
+metadata$sample.names
+```
+
+```{r}
+metadata<-read.delim("alios_metadata.txt")
+```
+
+
+```{r}
+rownames(metadata) <- rownames(seqtab.nochim)
+metadata$sample.names<-rownames(metadata)
+```
+
+THIS PART IS COMPLETE
+```{r}
+
+seqs <- getSequences(seqtab.nochim)
+names(seqs) <- seqs # This propagates to the tip labels of the tree
+alignment <- AlignSeqs(DNAStringSet(seqs), anchor=NA)
+
+```
+
+THIS PART IS COMPLETE
+```{r}
+
+phang.align <- phyDat(as(alignment, "matrix"), type="DNA")
+dm <- dist.ml(phang.align)
+treeNJ<- NJ(dm)
+```
+
+COMPLETE
+```{r}
+fit = pml(treeNJ, data=phang.align)
+
+fitGTR <- update(fit, k=4, inv=0.2)
+fitGTR <- optim.pml(fitGTR, model="GTR", optInv=TRUE, optGamma=TRUE,
+                      rearrangement = "stochastic", control = pml.control(trace = 0))
+
+```
+
+COMPLETE
+```{r}
+dna <- DNAStringSet(getSequences(seqtab.nochim)) # Create a DNAStringSet from the ASVs
+ids <- IdTaxa(dna, trainingSet, strand="top", processors=NULL, verbose=FALSE) # use all processors
+
+ranks <- c("domain", "phylum", "class", "order", "family", "genus", "species") # ranks of interest
+# Convert the output object of class "Taxa" to a matrix analogous to the output from assignTaxonomy
+taxid <- t(sapply(ids, function(x) {
+        m <- match(ranks, x$rank)
+        taxa <- x$taxon[m]
+        taxa[startsWith(taxa, "unclassified_")] <- NA
+        taxa
+}))
+colnames(taxid) <- ranks; rownames(taxid) <- getSequences(seqtab.nochim)
+```
+
+COMPLETE, but can run again
+Create a phyloseq object
+```{r}
+ps <- phyloseq(tax_table(taxa), sample_data(metadata),
+                 otu_table(seqtab.nochim,taxa_are_rows=FALSE, phy_tree(fitGTR$tree)))
+```
+
+Changes the ASV names
+```{r}
+dna <- Biostrings::DNAStringSet(taxa_names(ps))
+names(dna) <- taxa_names(ps)
+ps <- merge_phyloseq(ps, dna)
+taxa_names(ps) <- paste0("ASV", seq(ntaxa(ps)))
+ps
+```
+
+#alpha diversity
+
+```{r}
+rare_data<-rarecurve(seqtab.nochim, step = 20, sample=5000, col = "blue", cex = 0.6, tidy=TRUE)
+```
+
+```{r}
+rare_data$sample.names<-rare_data$Site
+```
+
+```{r}
+rare_data<-rare_data%>%left_join(metadata)
+```
+
+```{r}
+rare_data%>%ggplot(aes(Sample, Species, group=Site))+geom_line()+geom_vline(xintercept=44235)+theme_bw()
+ggsave("fig1.png")
+ggsave("fig1.pdf")
+```
+```{r}
+
+```
+
+
+Normalise data 
+```{r}
+ps_rare <- phyloseq::rarefy_even_depth(ps,sample.size=44235, rngseed = 123, replace = FALSE)
+```
+
+Generate the alpha diversity
+```{r}
+ps_alpha_rich <- estimate_richness(ps_rare, split = TRUE)
+```
+
+
+```{r}
+ps_alpha_rich$sample.names<-rownames(ps_alpha_rich)
+```
+
+
+JOin the alpha diversity with the metadata
+```{r}
+ps_alpha_rich<-ps_alpha_rich%>%left_join(metadata)
+
+ps_alpha_rich$Group<-factor(ps_alpha_rich$Group, levels=c("NC","ALIOS"))
+```
+
+Plot the data can change to AUTO
+```{r}
+a<-ps_alpha_rich%>%filter(Group!="AKR1D1")%>%ggplot(aes(Group, Shannon ))+geom_boxplot()+geom_jitter()+theme_bw()
+b<-ps_alpha_rich%>%filter(Group!="AKR1D1")%>%ggplot(aes(Group, Chao1))+geom_boxplot()+geom_jitter()+theme_bw()
+plot_grid(a,b, labels= 'A', 'B')
+ggsave("fig2.png")
+ggsave("fig2.pdf")
+```
+
+NEW STUFFS diversity plot
+```{r}
+group_colors <- c("#33B2FF", "#FFA833")
+
+a <- ps_alpha_rich %>% 
+  filter(Group != "AKR1D1") %>% 
+  ggplot(aes(Group, Shannon, fill = Group)) + 
+  geom_boxplot() + 
+  geom_jitter() + 
+  scale_fill_manual(values = group_colors) + 
+  theme_bw()
+
+b <- ps_alpha_rich %>% 
+  filter(Group != "AKR1D1") %>% 
+  ggplot(aes(Group, Simpson, fill = Group)) + 
+  geom_boxplot() + 
+  geom_jitter() + 
+  scale_fill_manual(values = group_colors) + 
+  theme_bw()
+
+c <- ps_alpha_rich %>% 
+  filter(Group != "AKR1D1") %>% 
+  ggplot(aes(Group, InvSimpson, fill = Group)) + 
+  geom_boxplot() + 
+  geom_jitter() + 
+  scale_fill_manual(values = group_colors) + 
+  theme_bw()
+
+d <- ps_alpha_rich %>% 
+  filter(Group != "AKR1D1") %>% 
+  ggplot(aes(Group, Chao1, fill = Group)) + 
+  geom_boxplot() + 
+  geom_jitter() + 
+  scale_fill_manual(values = group_colors) + 
+  theme_bw()
+
+e <- ps_alpha_rich %>% 
+  filter(Group != "AKR1D1") %>% 
+  ggplot(aes(Group, Fisher, fill = Group)) + 
+  geom_boxplot() + 
+  geom_jitter() + 
+  scale_fill_manual(values = group_colors) + 
+  theme_bw()
+
+f <- ps_alpha_rich %>% 
+  filter(Group != "AKR1D1") %>% 
+  ggplot(aes(Group, Observed, fill = Group)) + 
+  geom_boxplot() + 
+  geom_jitter() + 
+  scale_fill_manual(values = group_colors) + 
+  theme_bw()
+
+g <- ps_alpha_rich %>% 
+  filter(Group != "AKR1D1") %>% 
+  ggplot(aes(Group, ACE, fill = Group)) + 
+  geom_boxplot() + 
+  geom_jitter() + 
+  scale_fill_manual(values = group_colors) + 
+  theme_bw()
+
+
+plot_grid(a,b,c,d,e,f,g)
+ggsave("fig2.png")
+ggsave("fig2.pdf")
+
+```
+
+make a summary
+
+```{r}
+
+ave_alpha<-ps_alpha_rich%>%filter(Group!="AKR1D1")%>%group_by(Group)%>%summarise(mean_shannon=mean(Shannon), sd_shannon=sd(Shannon))
+
+```
+
+continued summary
+
+```{r}
+alpha_bar<-ave_alpha%>%ggplot(aes(Group, mean_shannon, fill=Group))+geom_bar(stat="identity", position = position_dodge(),colour="black")+
+geom_errorbar(aes(ymin = mean_shannon-sd_shannon, ymax = mean_shannon+sd_shannon),position=position_dodge(.9), width=0.6)+
+scale_y_continuous(limits = c(0, 10), expand = c(0, 0))+
+scale_fill_manual(values=c('#66b3ff','#cce6ff'))+theme_bw()+
+ylab("mean Shannon diversity")
+alpha_bar
+```
+
+SUMMARY PLOT 
+
+```{r}
+ave_alpha<-ps_alpha_rich%>%filter(Group!="AKR1D1")%>%group_by(Group)%>%summarise(mean_fisher=mean(Fisher), sd_fisher=sd(Fisher))
+
+```
+
+
+
+```{r}
+alpha_bar<-ave_alpha%>%ggplot(aes(Group, mean_fisher, fill=Group))+geom_bar(stat="identity", position = position_dodge(),colour="black")+
+geom_errorbar(aes(ymin = mean_fisher-sd_fisher, ymax = mean_fisher+sd_fisher),position=position_dodge(.9), width=0.6)+
+scale_y_continuous(limits = c(0,120), expand = c(0, 0))+
+scale_fill_manual(values=c('#66b3ff','#cce6ff'))+theme_bw()+
+ylab("mean Fisher diversity")
+alpha_bar
+
+```
+
+
+
+Statistics
+
+Non parametric tests
+```{r}
+kruskal.test(ps_alpha_rich$Shannon, ps_alpha_rich$Group)
+pairwise.wilcox.test(ps_alpha_rich$Shannon, ps_alpha_rich$Group, p.adjust.method = "BH")
+
+kruskal.test(ps_alpha_rich$Simpson, ps_alpha_rich$Group)
+pairwise.wilcox.test(ps_alpha_rich$Simpson, ps_alpha_rich$Group, p.adjust.method = "BH")
+
+kruskal.test(ps_alpha_rich$InvSimpson, ps_alpha_rich$Group)
+pairwise.wilcox.test(ps_alpha_rich$InvSimpson, ps_alpha_rich$Group, p.adjust.method = "BH")
+
+kruskal.test(ps_alpha_rich$Chao1, ps_alpha_rich$Group)
+pairwise.wilcox.test(ps_alpha_rich$Chao1, ps_alpha_rich$Group, p.adjust.method = "BH")
+
+kruskal.test(ps_alpha_rich$Observed, ps_alpha_rich$Group)
+pairwise.wilcox.test(ps_alpha_rich$Observed, ps_alpha_rich$Group, p.adjust.method = "BH")
+
+kruskal.test(ps_alpha_rich$ACE, ps_alpha_rich$Group)
+pairwise.wilcox.test(ps_alpha_rich$ACE, ps_alpha_rich$Group, p.adjust.method = "BH")
+
+kruskal.test(ps_alpha_rich$Fisher, ps_alpha_rich$Group)
+pairwise.wilcox.test(ps_alpha_rich$Fisher, ps_alpha_rich$Group, p.adjust.method = "BH")
+
+
+```
+
+
+#Beta diversity
+
+```{r}
+pslog <- transform_sample_counts(ps_rare, function(x) log(1 + x))
+pslog<-subset_samples(pslog,Group!="AKR1D1")
+out.bc.log <- ordinate(pslog, method = "MDS", distance = "bray")
+out.jac.log <- ordinate(pslog, method = "MDS", distance = "jaccard")
+```
+
+NEW BETA unweigh
+
+```{r}
+pslog_phylo <- phyloseq(otu_table(ps_rare), sample_data(ps_rare), phy_tree(treeNJ))
+pslog_phylo <- transform_sample_counts(pslog_phylo, function(x) log(1 + x))
+pslog_phylo<-subset_samples(pslog_phylo,Group!="AKR1D1")
+out.uuf.log <- ordinate(pslog_phylo, method = "MDS", distance = "unifrac")
+
+
+evals <- out.uuf.log$values$Eigenvalues
+plot_ordination(pslog, out.uuf.log, color = "Group") +
+  coord_fixed(sqrt(evals[1] / evals[2]))+theme_bw()+geom_hline(yintercept = 0)+geom_vline(xintercept = 0)
+ggsave("fig3c.pdf")
+ggsave("fig3c.png")
+
+unifrac_dist <- phyloseq::distance(pslog_phylo, method = "unifrac")
+
+metadata <- data.frame(sample_data(pslog_phylo))
+group_variable <- "Group" 
+adonis2_result <- vegan::adonis2(unifrac_dist ~ metadata[[group_variable]], permutations = 999)
+print(adonis2_result)
+
+
+```
+
+```{r}
+pslog_phylo <- phyloseq(otu_table(ps_rare), sample_data(ps_rare), phy_tree(treeNJ))
+pslog_phylo <- transform_sample_counts(pslog_phylo, function(x) log(1 + x))
+pslog_phylo <- subset_samples(pslog_phylo, Group != "AKR1D1")
+out.wuf.log <- ordinate(pslog_phylo, method = "MDS", distance = "wunifrac") 
+evals <- out.wuf.log$values$Eigenvalues
+plot_ordination(pslog, out.wuf.log, color = "Group") +
+  coord_fixed(sqrt(evals[1] / evals[2]))+theme_bw()+geom_hline(yintercept = 0)+geom_vline(xintercept = 0)
+ggsave("fig3d.pdf")
+ggsave("fig3d.png")
+
+# Perform PERMANOVA with weighted UniFrac distance matrix
+wunifrac_dist <- phyloseq::distance(pslog_phylo, method = "wunifrac")
+metadata <- data.frame(sample_data(pslog_phylo))
+group_variable <- "Group" # Replace "Group" with the appropriate variable name from your metadata
+adonis2_result <- vegan::adonis2(wunifrac_dist ~ metadata[[group_variable]], permutations = 999)
+print(adonis2_result)
+
+
+```
+
+```{r}
+evals <- out.bc.log$values$Eigenvalues
+plot_ordination(pslog, out.bc.log, color = "Group") +
+  coord_fixed(sqrt(evals[1] / evals[2]))+theme_bw()+geom_hline(yintercept = 0)+geom_vline(xintercept = 0)
+ggsave("fig3a.pdf")
+ggsave("fig3a.png")
+```
+
+```{r}
+evals <- out.jac.log$values$Eigenvalues
+plot_ordination(pslog, out.jac.log, color = "Group") +
+  coord_fixed(sqrt(evals[2] / evals[1]))+theme_bw()+geom_hline(yintercept = 0)+geom_vline(xintercept = 0)
+ggsave("fig3b.pdf")
+ggsave("fig3b.png")
+```
+
+
+```{r}
+pseq.rel <- microbiome::transform(ps_rare, "compositional")
+pseq.rel <-subset_samples(pseq.rel ,Group!="AKR1D1")
+otu <- microbiome::abundances(pseq.rel)
+meta <- microbiome::meta(pseq.rel)
+```
+
+
+```{r}
+braypermanova <- adonis2(t(otu) ~ Group, data = meta, permutations=999, method = "bray")
+jacpermanova <- adonis2(t(otu) ~ Group, data = meta, permutations=999, method = "jaccard")
+wunipermanva <- adonis2(t(otu) ~ Group, data = meta, permutations=999, method ="wunifrac")
+
+
+```
+test only 
+```{r}
+
+```
+
+
+Check that variance homogeneity assumptions hold
+```{r}
+dist <- vegdist(t(otu),"bray")
+anova(betadisper(dist, meta$Group))
+
+```
+```{r}
+dispr <- vegan::betadisper(dist, phyloseq::sample_data(ps_rare)$Group)
+dispr
+boxplot(dispr, main = "", xlab = "")
+```
+Taxonomy
+
+
+bad bar plot
+```{r}
+plot_bar(ps_rare, fill="Phylum")
+```
+
+Complicated bar blot
+this could be wrong!
+```{r}
+ps_rare<-subset_samples(ps_rare, Group!="AKR1D1")
+rel_ab<-t(otu_table(ps_rare))
+rel_ab<-apply(rel_ab, 2, function(x) x/sum(x)*100)
+rel_ab<-data.frame(rel_ab)
+rel_ab$ID<-rownames(rel_ab)
+taxa<-data.frame(taxa)
+taxa$ID<-rownames(taxa)
+rel_ab<-rel_ab%>%left_join(taxa)
+
+```
+
+nice bar plot- NEW CODE
+
+```{r}
+# Subset samples and calculate relative abundance
+ps_rare <- subset_samples(ps_rare, Group != "AKR1D1")
+rel_ab <- t(otu_table(ps_rare))
+rel_ab <- apply(rel_ab, 2, function(x) x / sum(x) * 100)
+rel_ab <- data.frame(rel_ab)
+rel_ab$ID <- rownames(rel_ab)
+
+# Join taxonomic information
+taxa <- data.frame(tax_table(ps_rare))
+taxa$ID <- rownames(taxa)
+rel_ab <- merge(rel_ab, taxa, by = "ID")
+
+
+# Create taxa bar plot
+rel_ab_long <- gather(rel_ab, "Sample", "Abundance", -ID, -Kingdom, -Phylum, -Class, -Order, -Family, -Genus)
+
+my_colors <- hsv(seq(0,1,length=30), 0.5, 0.9)
+  
+  ggplot(rel_ab_long, aes(x = Sample, y = Abundance, fill = Phylum)) +
+  geom_col() +
+  xlab("Sample") +
+  ylab("Relative Abundance (%)") +
+  scale_fill_manual(values = my_colors) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 25, hjust = 1))
+
+
+
+```
+
+another box plot but fancier, group/phylum
+
+```{r}
+ggplot(phylum_plots, aes(x = Phylum, y = Abundance, color = Group)) +
+  geom_boxplot(size = 0.4) +
+  geom_jitter(width = 0.2) +
+  scale_color_manual(values = c("#D81B60", "#1E88E5")) +
+  xlab("Phylum") +
+  ylab("Abundance") +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+ggsave("mefig_SEC4_per_phyl.png")
+
+```
+
+annoying pie chart- ALIOS only
+```{r}
+phylum_plots_ALIOS <- phylum_plots %>%
+    filter(Group != "NC")
+ggplot(phylum_plots_ALIOS, aes(x = "", y = Abundance, fill = Phylum)) +
+    geom_bar(stat = "identity", width = 1) +
+    coord_polar(theta = "y") +
+    scale_fill_discrete(name = "Phylum") +
+    labs(title = "ALIOS sample only") +
+    theme_void() +
+    theme(legend.position = "right")
+ggsave("mefig_SEC4_ALIOS_PIE.png")
+
+```
+
+annoying pie chart NC only 
+```{r}
+
+phylum_plots_NC <- phylum_plots %>%
+    filter(Group != "ALIOS")
+ggplot(phylum_plots_NC, aes(x = "", y = Abundance, fill = Phylum)) +
+    geom_bar(stat = "identity", width = 1) +
+    coord_polar(theta = "y") +
+    scale_fill_discrete(name = "Phylum") +
+    labs(title = "NC sample only") +
+    theme_void() +
+    theme(legend.position = "right")
+ggsave("mefig_SEC4_NC_PIE.png")
+
+```
+
+run once, if you need to run this again, run the code above at line 286 again
+```{r}
+d<-pivot_longer(rel_ab,starts_with("D"), values_to="Ab", names_to="sample.names")
+d<-d%>%group_by(Genus,sample.names)%>%summarise(per=sum(Ab))
+d<-d%>%left_join(metadata)
+d<-d%>%group_by(Genus,Group)%>%summarise(ave.per=mean(per))
+d<-d%>%mutate(Genus=replace(Genus, ave.per<5, "Other")) %>% as.data.frame()
+
+d$Genus<-factor(d$Genus)
+taxa_plot<-d%>%ggplot(aes(x=Group, y=ave.per, fill=Genus)) + geom_bar(stat="identity")+theme_bw()+scale_y_continuous(limits = c(0, 104), expand = c(0,0))+theme(legend.position="none")
+taxa_plot
+ggsave("fig4.png")
+ggsave("fig4.pdf")
+```
+
+
+
+taxa_plot+theme(legend.position="right")
+
+```{r}
+ps_rare<-subset_samples(ps_rare, Group!="AKR1D1")
+ps_phylum <- phyloseq::tax_glom(ps_rare, "Phylum")
+phyloseq::taxa_names(ps_phylum) <- phyloseq::tax_table(ps_phylum)[, "Phylum"]
+phyloseq::otu_table(ps_phylum)[1:3, 1:18]
+```
+
+Add colours as scale_color_manual
+```{r}
+phylum_plots<-phyloseq::psmelt(ps_phylum)
+fig<-phylum_plots%>%
+ggplot(aes(Group, Abundance, fill=Group)) +
+  geom_boxplot(outlier.shape  = NA) + 
+  geom_jitter(alpha=0.3, size=1) +
+  labs(x = " ", y = "Abundance\n") +
+  facet_wrap(~ OTU, scales = "free")
+fig+theme_bw()
+
+```
+
+
+```{r}
+fig5x<-phylum_plots%>%filter(OTU =="Firmicutes")%>%
+ggplot(aes(Group, Abundance, fill=Group)) +
+  geom_boxplot(outlier.shape  = NA) +
+   geom_dotplot(binaxis = "y", stackdir = "center", position = "dodge") +scale_fill_brewer(palette = "Set1")+
+  labs(x = "", y = "Abundance\n")+theme_cowplot(12)
+fig5x
+ggsave("fig5afirm.pdf")
+```
+
+
+Phylum abundance stats
+```{r}
+library(purrr)
+phylum_plots$OTU<-factor(phylum_plots$OTU)
+levels(phylum_plots$OTU)
+phylum_plots%>%split(.$OTU) %>%map(~ kruskal.test(Abundance ~ Group, data = .x)) 
+```
+
+
+
+#Abundance testing
+What is this? Read about LIMMA
+```{r}
+library(edgeR)
+ps<-subset_samples(ps, Group!="AKR1D1")
+dds <- phyloseq_to_deseq2(ps, ~ Group) 
+dge <- as.DGEList(dds)
+
+dge <- calcNormFactors(dge, method = "TMM")          
+head(dge$samples$norm.factors)
+mm <- model.matrix(~ group, dge$samples)              
+y <- voom(dge, mm, plot = T) 
+fit <- lmFit(y, mm)                                   
+fit <- eBayes(fit)
+head(coef(fit))
+limma_res_df <- data.frame(topTable(fit, coef = "groupNC", number = Inf))
+
+limma_res_df$taxa<-rownames(limma_res_df)
+taxa$taxa<-rownames(taxa)
+results<-taxa%>%left_join(limma_res_df)
+
+fdr_limma <- results %>%
+    dplyr::filter(adj.P.Val < 0.05)
+vol
+ggsave("fig6.png")
+ggsave("fig6.pdf")
+```
+
+
+```{r}    
+vol<-fdr_limma%>%ggplot(aes(x = Genus, y = logFC)) +
+  geom_point(size = 4) +
+  labs(y = "\nLog2 Fold-Change for ALIOS vs. NC", x = "") +
+  theme(axis.text.x = element_text(color = "black", size = 12),
+        axis.text.y = element_text(color = "black", size = 12),
+        axis.title.y = element_text(size = 14),
+        axis.title.x = element_text(size = 14),
+        legend.text = element_text(size = 12),
+        legend.title = element_text(size = 12),
+        legend.position = "none") +
+  coord_flip() +
+  geom_hline(yintercept = 0, linetype="dotted")+theme_bw()
+```
+
+
+What is this? Read about Lefse!
+```{r}
+mm_lefse <- run_lefse(
+    ps_rare,
+    wilcoxon_cutoff = 0.01,
+    group = "Group",
+    kw_cutoff = 0.01,
+    multigrp_strat = TRUE,
+    lda_cutoff = 4)
+plot_ef_bar(mm_lefse)
+ggsave("fig7.png")
+ggsave("fig7.pdf")
+```
+
+
+What is this? Read about ALDEX2
+```{r}
+ps_ad<-subset_samples(ps, Group!="AKR1D1")
+ps_ad_otu<-data.frame(t(otu_table(ps_ad)))
+aldex2_da <-aldex(ps_ad_otu, sample_data(ps_ad)$Group, test="t", effect = TRUE, denom="iqlr")
+aldex.plot(aldex2_da, type="MW", test="wilcox", called.cex = 1, cutoff = 0.05)
+```
+```{r}
+sig_aldex2 <- aldex2_da %>%
+  rownames_to_column(var = "OTU") %>%
+  filter(wi.eBH < 0.05) %>%
+  arrange(effect, wi.eBH) %>%
+  dplyr::select(OTU, diff.btw, diff.win, effect, wi.ep, wi.eBH)
+sig_aldex2$ID<-sig_aldex2$OTU
+sig_aldex2 <- left_join(sig_aldex2, taxa)
+```
